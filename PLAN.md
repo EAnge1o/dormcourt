@@ -1,9 +1,23 @@
 # 宿舍法院 DormCourt · 技术方案（PLAN）
 
-- 版本：v1.2
-- 日期：2026-11-08
+- 版本：v1.3
+- 日期：2026-11-17
 - 依据：SPEC.md v1.0（已评审）
 - 平台：Qoder Sites 全托管（静态前端 + Edge Function + 数据库）
+
+## 0. v1.3 玩法扩展与体验加固（2026-11-17）
+
+**平票加赛**：vote 模式开庭时若有票且最高票并列（≥2 项），先进入 `runoff` 状态（仅平票选项、90 秒倒计时、`runoff_options` 存下标、票数清零重投），决胜局内仍平票才在平票选项内随机。join/vote 对 open/runoff 开放，vote 在 runoff 中仅接受平票选项（否则 409 `runoff_required`）。条件更新保证并发下只进入一次。
+
+**惩罚令**：开庭时按案由从惩罚池随机抽取存入 `punishment_text`（8 案由 × 3-4 条）。vote 模式败选方（投错或沉默者）受罚并展示名单，全票通过则惩罚作废；roulette 模式对命运选中者附加惩罚。复制判决书/分享文案携带惩罚令。
+
+**新增案由**：lights（几点关灯）、ac（空调几度）、takeout（外卖谁去拿）、game（开黑谁背锅），配套像素图标（bulb/snow/gamepad）、判决书模板各 8 条、惩罚池与服务端白名单。
+
+**体验加固（随本版）**：社交分享卡片（og meta + 1200×630 og.jpg + favicon.svg）；POST /cases 限流（按 IP 8 次/10 分钟内存窗口 + 按 created_by 5 次/10 分钟查库）；自动开庭/判决书失败重试指数退避（2s→30s 封顶）。
+
+**schema 变更**：cases 增 `runoff_options jsonb`、`punishment_text text`；增索引 `cases_created_by_created_idx`。
+
+---
 
 ## 0. v1.2 架构回退：Qoder 原生后端（2026-11-08）
 

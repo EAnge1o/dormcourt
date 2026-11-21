@@ -14,16 +14,19 @@ CREATE TABLE app.cases (
   deadline_at timestamptz,
   status text NOT NULL DEFAULT 'open',
   result_index integer,
+  runoff_options jsonb,
   verdict_text text,
   verdict_source text,
   verdict_status text NOT NULL DEFAULT 'none',
   verdict_started_at timestamptz,
+  punishment_text text,
   created_by uuid NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   decided_at timestamptz
 );
 
 CREATE INDEX cases_room_created_idx ON app.cases (room_id, created_at);
+CREATE INDEX cases_created_by_created_idx ON app.cases (created_by, created_at);
 
 CREATE TABLE app.case_members (
   case_id uuid NOT NULL REFERENCES app.cases (id),

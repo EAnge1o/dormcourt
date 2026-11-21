@@ -1,5 +1,7 @@
+import type { IconName } from "@/components/PixelIcon";
+
 export type Mode = "vote" | "roulette";
-export type ScenarioId = "eat" | "express" | "duty" | "custom";
+export type ScenarioId = "eat" | "express" | "duty" | "lights" | "ac" | "takeout" | "game" | "custom";
 
 export interface ScenarioPreset {
   id: ScenarioId;
@@ -8,7 +10,7 @@ export interface ScenarioPreset {
   question: string;
   mode: Mode;
   options: string[];
-  icon: "bowl" | "box" | "broom" | "scales";
+  icon: IconName;
 }
 
 export const ROOMMATES = ["床长", "卷王", "干饭人", "夜猫子"];
@@ -40,6 +42,42 @@ export const SCENARIOS: ScenarioPreset[] = [
     mode: "roulette",
     options: [...ROOMMATES],
     icon: "broom",
+  },
+  {
+    id: "lights",
+    title: "几点关灯",
+    desc: "熬夜党与养生党的休战协议",
+    question: "今晚几点熄灯？",
+    mode: "vote",
+    options: ["22:30", "23:00", "23:30", "通宵"],
+    icon: "bulb",
+  },
+  {
+    id: "ac",
+    title: "空调几度",
+    desc: "26 度党与 22 度党的世纪对决",
+    question: "空调开多少度？",
+    mode: "vote",
+    options: ["22 度", "24 度", "26 度", "关了吧"],
+    icon: "snow",
+  },
+  {
+    id: "takeout",
+    title: "外卖谁去拿",
+    desc: "全员装死 · 票数说话",
+    question: "外卖到楼下了，谁下去拿？",
+    mode: "vote",
+    options: [...ROOMMATES],
+    icon: "box",
+  },
+  {
+    id: "game",
+    title: "开黑谁背锅",
+    desc: "团战输了，总得有个说法",
+    question: "这把输了谁背锅？",
+    mode: "vote",
+    options: ["打野", "辅助", "射手", "网卡了"],
+    icon: "gamepad",
   },
 ];
 

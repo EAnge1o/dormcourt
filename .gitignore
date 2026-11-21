@@ -1,9 +1,31 @@
+# 依赖
 node_modules/
+
+# 构建产物
 dist/
+*.tsbuildinfo
+
+# 环境变量
 .env
 .env.*
-.DS_Store
-*.tsbuildinfo
+!.env.example
+
+# Qoder Sites 本地元数据
 *.qoder.site
 .qoder-sites/
 .qoder-sites.json
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp

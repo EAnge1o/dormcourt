@@ -14,11 +14,13 @@ export interface CaseDTO {
   mode: Mode;
   options: string[];
   deadlineAt: string | null;
-  status: "open" | "decided";
+  status: "open" | "runoff" | "decided";
   resultIndex: number | null;
+  runoffOptions: number[] | null;
   verdictText: string | null;
   verdictSource: "ai" | "template" | null;
   verdictStatus: "none" | "pending" | "ready";
+  punishmentText: string | null;
   createdBy: string;
   createdAt: string;
   decidedAt: string | null;

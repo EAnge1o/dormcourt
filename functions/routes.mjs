@@ -1,5 +1,9 @@
+import { pickPunishment } from "./templates.mjs";
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const SCENARIOS = ["eat", "express", "duty", "custom"];
+const SCENARIOS = ["eat", "express", "duty", "lights", "ac", "takeout", "game", "custom"];
+const RUNOFF_MS = 90 * 1000;
+
 const MESSAGES = {
   invalid_input: "输入不合法，请检查后重试",
   payload_too_large: "提交内容过长",
@@ -9,6 +13,8 @@ const MESSAGES = {
   not_allowed: "仅发起人可提前开庭，或等待倒计时结束",
   not_decided: "本案尚未开庭",
   invalid_mode: "本案为命运轮盘模式，无需投票",
+  runoff_required: "决胜局已开始，请从加赛选项中重新投票",
+  too_many_requests: "立案太频繁，本庭先喘口气，稍后再来",
   internal: "本院暂时休庭，请稍后再试",
 };
 
@@ -21,6 +27,35 @@ export function application({ db, BackendError, verdictProvider }) {
     return result.data;
   };
   const uuid = (v) => typeof v === "string" && UUID_RE.test(v);
+
+  // In-memory per-instance window; the per-voter DB check below still bounds
+  // abuse across instances. Edge restarts simply reset this map.
+  const CREATE_LIMIT = { windowMs: 10 * 60 * 1000, perIp: 8, perVoter: 5 };
+  const creationTimes = new Map();
+  const clientIp = (request) =>
+    request.headers.get("x-forwarded-for")?.split(",")[0].trim() || request.headers.get("x-real-ip")?.trim() || "local";
+  function checkIpLimit(request) {
+    const ip = clientIp(request);
+    const now = Date.now();
+    const list = (creationTimes.get(ip) ?? []).filter((t) => now - t < CREATE_LIMIT.windowMs);
+    creationTimes.set(ip, list);
+    if (list.length >= CREATE_LIMIT.perIp) fail("too_many_requests", 429);
+    return ip;
+  }
+  function recordCreation(ip) {
+    const now = Date.now();
+    const list = (creationTimes.get(ip) ?? []).filter((t) => now - t < CREATE_LIMIT.windowMs);
+    list.push(now);
+    creationTimes.set(ip, list);
+  }
+  async function checkVoterLimit(voterId) {
+    const recent = rows(
+      await db.from("cases").select("created_at").eq("created_by", voterId).order("created_at", { ascending: false }).limit(CREATE_LIMIT.perVoter),
+    );
+    if (recent.length >= CREATE_LIMIT.perVoter && Date.now() - Date.parse(recent[recent.length - 1].created_at) < CREATE_LIMIT.windowMs) {
+      fail("too_many_requests", 429);
+    }
+  }
 
   async function input(request) {
     if (!request.headers.get("content-type")?.startsWith("application/json")) fail("invalid_input", 400);
@@ -43,9 +78,11 @@ export function application({ db, BackendError, verdictProvider }) {
     deadlineAt: r.deadline_at,
     status: r.status,
     resultIndex: r.result_index,
+    runoffOptions: r.runoff_options ?? null,
     verdictText: r.verdict_text,
     verdictSource: r.verdict_source,
     verdictStatus: r.verdict_status,
+    punishmentText: r.punishment_text ?? null,
     createdBy: r.created_by,
     createdAt: r.created_at,
     decidedAt: r.decided_at,
@@ -104,6 +141,8 @@ export function application({ db, BackendError, verdictProvider }) {
         ) {
           fail("invalid_input", 400);
         }
+        const ip = checkIpLimit(request);
+        await checkVoterLimit(body.voterId);
         let room;
         if (body.roomId) {
           if (!uuid(body.roomId)) fail("invalid_input", 400);
@@ -135,6 +174,7 @@ export function application({ db, BackendError, verdictProvider }) {
             decided_at: null,
           }).select("*"),
         );
+        recordCreation(ip);
         return Response.json({ room: roomDTO(room), case: caseDTO(inserted[0]) }, { status: 201 });
       }
 
@@ -159,7 +199,7 @@ export function application({ db, BackendError, verdictProvider }) {
           const nickname = typeof body?.nickname === "string" ? body.nickname.trim() : "";
           if (!uuid(body?.voterId) || !nickname || nickname.length > 12) fail("invalid_input", 400);
           const c = await loadCase(id);
-          if (c.status !== "open") fail("case_closed", 409);
+          if (c.status === "decided") fail("case_closed", 409);
           const inserted = rows(
             await db.from("case_members").insertIfAbsent(
               { case_id: id, voter_id: body.voterId, nickname, choice: null, updated_at: new Date().toISOString() },
@@ -177,9 +217,10 @@ export function application({ db, BackendError, verdictProvider }) {
           const body = await input(request);
           if (!uuid(body?.voterId) || !Number.isInteger(body?.optionIndex)) fail("invalid_input", 400);
           const c = await loadCase(id);
-          if (c.status !== "open") fail("case_closed", 409);
+          if (c.status === "decided") fail("case_closed", 409);
           if (c.mode !== "vote") fail("invalid_mode", 400);
           if (body.optionIndex < 0 || body.optionIndex >= c.options.length) fail("invalid_input", 400);
+          if (c.status === "runoff" && !(c.runoff_options ?? []).includes(body.optionIndex)) fail("runoff_required", 409);
           const updated = rows(
             await db.from("case_members").update({ choice: body.optionIndex, updated_at: new Date().toISOString() }).eq("case_id", id).eq("voter_id", body.voterId).select("*"),
           );
@@ -194,15 +235,52 @@ export function application({ db, BackendError, verdictProvider }) {
           if (c.status === "decided") return Response.json({ case: caseDTO(c) });
           const expired = c.deadline_at !== null && Date.now() >= Date.parse(c.deadline_at);
           if (body.voterId !== c.created_by && !expired) fail("not_allowed", 403);
+          const members = await loadMembers(id);
+          const counts = countVotes(members, c.options.length);
+          if (c.status === "open" && c.mode === "vote") {
+            const max = Math.max(...counts);
+            const tied = counts.map((n, i) => (n === max ? i : -1)).filter((i) => i >= 0);
+            // 平票且有票：先加赛，不随机。条件更新保证并发下只进入一次。
+            if (max > 0 && tied.length > 1) {
+              const flipped = rows(
+                await db
+                  .from("cases")
+                  .update({ status: "runoff", runoff_options: tied, deadline_at: new Date(Date.now() + RUNOFF_MS).toISOString() })
+                  .eq("id", id)
+                  .eq("status", "open")
+                  .select("*"),
+              );
+              if (!flipped?.length) {
+                const again = await loadCase(id);
+                return Response.json({ case: caseDTO(again) });
+              }
+              rows(await db.from("case_members").update({ choice: null, updated_at: new Date().toISOString() }).eq("case_id", id));
+              return Response.json({ case: caseDTO(flipped[0]) });
+            }
+          }
           const flipped = rows(
-            await db.from("cases").update({ status: "decided", decided_at: new Date().toISOString() }).eq("id", id).eq("status", "open").select("*"),
+            await db
+              .from("cases")
+              .update({ status: "decided", decided_at: new Date().toISOString(), punishment_text: pickPunishment(c.scenario) })
+              .eq("id", id)
+              .eq("status", c.status)
+              .select("*"),
           );
           if (!flipped?.length) {
             const again = await loadCase(id);
             return Response.json({ case: caseDTO(again) });
           }
-          const members = await loadMembers(id);
-          const resultIndex = pickResult(c.mode, countVotes(members, c.options.length));
+          let resultIndex;
+          if (c.mode === "roulette") {
+            resultIndex = pickResult("roulette", counts);
+          } else if (c.status === "runoff" && c.runoff_options?.length) {
+            // 决胜局内仍平票才听天由命，且只在平票选项里随机。
+            const max = Math.max(...c.runoff_options.map((i) => counts[i]));
+            const tied = c.runoff_options.filter((i) => counts[i] === max);
+            resultIndex = tied[Math.floor(Math.random() * tied.length)];
+          } else {
+            resultIndex = pickResult("vote", counts);
+          }
           const withResult = rows(await db.from("cases").update({ result_index: resultIndex }).eq("id", id).select("*"));
           return Response.json({ case: caseDTO(withResult[0]) });
         }

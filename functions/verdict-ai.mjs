@@ -1,6 +1,15 @@
 import { createCloudAgentsClient } from "./cloud-agents.mjs";
 
-const SCENARIO_LABEL = { eat: "今天吃什么", express: "谁去拿快递", duty: "宿舍值日", custom: "宿舍自定义议题" };
+const SCENARIO_LABEL = {
+  eat: "今天吃什么",
+  express: "谁去拿快递",
+  duty: "宿舍值日",
+  lights: "几点关灯",
+  ac: "空调温度",
+  takeout: "外卖谁拿",
+  game: "开黑背锅",
+  custom: "宿舍自定义议题",
+};
 const SYSTEM =
   "你是「宿舍法院」的幽默法官，专为宿舍琐事开庭裁决。请用庄重又搞笑的法庭腔写一句判决理由：结合胜出选项与案由，可玩宿舍梗（干饭、打团、取快递、值日），语气像正式判决书但内容好笑。要求：中文，不超过60字，只输出判决理由正文，不要标题、引号、案号或额外解释。";
 

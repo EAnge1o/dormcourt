@@ -1,3 +1,4 @@
+// NOTE: run against a freshly started local server (per-IP rate limit is in-memory).
 const BASE = "http://127.0.0.1:8000/functions/v1/app/api";
 let failures = 0;
 
@@ -80,6 +81,66 @@ const rVote = await call(`/cases/${rid}/vote`, "POST", { voterId: voterB, option
 check("roulette rejects vote 400", rVote.status === 400);
 const rDecided = await call(`/cases/${rid}/decide`, "POST", { voterId: voterA });
 check("roulette manual decide", rDecided.data.case.status === "decided" && rDecided.data.case.resultIndex >= 0 && rDecided.data.case.resultIndex < 4);
+check("roulette punishment drawn", typeof rDecided.data.case.punishmentText === "string" && rDecided.data.case.punishmentText.length > 0, rDecided.data.case.punishmentText);
+
+// Rate limit: voterA already created 2 cases; limit is 5 per 10 minutes.
+for (let i = 0; i < 3; i++) {
+  const more = await call("/cases", "POST", {
+    scenario: "custom",
+    question: `限流测试${i + 1}`,
+    mode: "vote",
+    options: ["甲", "乙"],
+    durationSec: null,
+    voterId: voterA,
+  });
+  check(`create case ${i + 3} of 5 ok`, more.status === 201);
+}
+const blocked = await call("/cases", "POST", {
+  scenario: "custom",
+  question: "限流测试6",
+  mode: "vote",
+  options: ["甲", "乙"],
+  durationSec: null,
+  voterId: voterA,
+});
+check("6th creation blocked 429", blocked.status === 429 && blocked.data?.error?.code === "too_many_requests");
+const freshVoter = await call("/cases", "POST", {
+  scenario: "custom",
+  question: "新投票人不受限",
+  mode: "vote",
+  options: ["甲", "乙"],
+  durationSec: null,
+  voterId: crypto.randomUUID(),
+});
+check("fresh voter unaffected", freshVoter.status === 201);
+
+// Tie vote forces a runoff round, then final decide draws a punishment
+const voterC = crypto.randomUUID();
+const voterD = crypto.randomUUID();
+const tie = await call("/cases", "POST", {
+  scenario: "ac",
+  question: "空调开多少度？",
+  mode: "vote",
+  options: ["22 度", "24 度", "26 度"],
+  durationSec: null,
+  voterId: voterC,
+});
+const tieId = tie.data.case.id;
+await call(`/cases/${tieId}/join`, "POST", { voterId: voterC, nickname: "冷党" });
+await call(`/cases/${tieId}/join`, "POST", { voterId: voterD, nickname: "热党" });
+await call(`/cases/${tieId}/vote`, "POST", { voterId: voterC, optionIndex: 0 });
+await call(`/cases/${tieId}/vote`, "POST", { voterId: voterD, optionIndex: 2 });
+const runoff = await call(`/cases/${tieId}/decide`, "POST", { voterId: voterC });
+check("tie enters runoff", runoff.data.case.status === "runoff" && JSON.stringify(runoff.data.case.runoffOptions) === "[0,2]", JSON.stringify(runoff.data.case.runoffOptions));
+const tieState = await call(`/cases/${tieId}`);
+check("runoff resets votes", JSON.stringify(tieState.data.counts) === "[0,0,0]");
+const badVote = await call(`/cases/${tieId}/vote`, "POST", { voterId: voterD, optionIndex: 1 });
+check("non-runoff option rejected", badVote.status === 409 && badVote.data?.error?.code === "runoff_required");
+await call(`/cases/${tieId}/vote`, "POST", { voterId: voterC, optionIndex: 0 });
+await call(`/cases/${tieId}/vote`, "POST", { voterId: voterD, optionIndex: 0 });
+const final = await call(`/cases/${tieId}/decide`, "POST", { voterId: voterC });
+check("runoff decide final", final.data.case.status === "decided" && final.data.case.resultIndex === 0, `result=${final.data.case.resultIndex}`);
+check("vote punishment drawn", typeof final.data.case.punishmentText === "string" && final.data.case.punishmentText.length > 0, final.data.case.punishmentText);
 
 console.log(failures === 0 ? "ALL PASS" : `${failures} FAILURES`);
 process.exitCode = failures === 0 ? 0 : 1;

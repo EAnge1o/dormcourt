@@ -46,8 +46,10 @@ export default function RoomPage({ id }: { id: string }) {
               </span>
               <span className="text-sm" style={{ color: "var(--site-muted)" }}>
                 {c.status === "decided"
-                  ? `判决：${c.options[c.resultIndex ?? 0]} · ${new Date(c.decidedAt ?? c.createdAt).toLocaleString("zh-CN", { hour12: false })}`
-                  : "尚未开庭"}
+                  ? `判决：${c.options[c.resultIndex ?? 0]}${c.punishmentText ? ` · 惩罚：${c.punishmentText}` : ""} · ${new Date(c.decidedAt ?? c.createdAt).toLocaleString("zh-CN", { hour12: false })}`
+                  : c.status === "runoff"
+                    ? "平票加赛中"
+                    : "尚未开庭"}
               </span>
             </button>
           </li>

@@ -22,6 +22,8 @@ export default function CasePage({ id }: { id: string }) {
   const revealSeen = useRef(false);
   const verdictRequested = useRef(false);
   const decideRequested = useRef(false);
+  const retryAttempts = useRef(0);
+  const retryTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   const refresh = useCallback(async () => {
     try {
@@ -36,20 +38,38 @@ export default function CasePage({ id }: { id: string }) {
     refresh();
   }, [refresh]);
 
+  useEffect(
+    () => () => {
+      retryTimers.current.forEach(clearTimeout);
+      retryTimers.current = [];
+    },
+    [],
+  );
+
+  const scheduleRetry = useCallback((retry: () => void) => {
+    const delay = Math.min(30000, 2000 * 2 ** retryAttempts.current);
+    retryAttempts.current += 1;
+    const timer = setTimeout(() => {
+      retryTimers.current = retryTimers.current.filter((t) => t !== timer);
+      retry();
+    }, delay);
+    retryTimers.current.push(timer);
+  }, []);
+
   const c = state?.case;
   const status = c?.status;
   const verdictStatus = c?.verdictStatus;
 
   useEffect(() => {
     if (!c) return;
-    if (status === "open" || (status === "decided" && verdictStatus !== "ready")) {
+    if (status === "open" || status === "runoff" || (status === "decided" && verdictStatus !== "ready")) {
       const timer = setInterval(refresh, POLL_MS);
       return () => clearInterval(timer);
     }
   }, [c, status, verdictStatus, refresh]);
 
   useEffect(() => {
-    if (status !== "open") return;
+    if (status !== "open" && status !== "runoff") return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [status]);
@@ -74,28 +94,34 @@ export default function CasePage({ id }: { id: string }) {
       verdictRequested.current = true;
       api
         .verdict(id)
-        .then(() => refresh())
+        .then(() => {
+          retryAttempts.current = 0;
+          refresh();
+        })
         .catch(() => {
           verdictRequested.current = false;
-          setRetryTick((t) => t + 1);
+          scheduleRetry(() => setRetryTick((t) => t + 1));
         });
     }
-  }, [status, verdictStatus, id, refresh, retryTick]);
+  }, [status, verdictStatus, id, refresh, retryTick, scheduleRetry]);
 
   const remaining = c?.deadlineAt ? Math.max(0, Date.parse(c.deadlineAt) - now) : null;
 
   useEffect(() => {
-    if (status === "open" && remaining === 0 && !decideRequested.current) {
+    if ((status === "open" || status === "runoff") && remaining === 0 && !decideRequested.current) {
       decideRequested.current = true;
       api
         .decide(id, voterId)
-        .then(() => refresh())
+        .then(() => {
+          retryAttempts.current = 0;
+          refresh();
+        })
         .catch(() => {
           decideRequested.current = false;
-          setRetryTick((t) => t + 1);
+          scheduleRetry(() => setRetryTick((t) => t + 1));
         });
     }
-  }, [status, remaining, id, voterId, refresh, retryTick]);
+  }, [status, remaining, id, voterId, refresh, retryTick, scheduleRetry]);
 
   async function act(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -140,6 +166,12 @@ export default function CasePage({ id }: { id: string }) {
   const isCreator = c.createdBy === voterId;
   const totalVotes = state.counts.reduce((a, b) => a + b, 0);
   const maxVotes = Math.max(1, ...state.counts);
+  const runoffOptions = c.runoffOptions;
+  const voteOptions =
+    runoffOptions && c.status === "runoff"
+      ? c.options.map((o, i) => ({ o, i })).filter((x) => runoffOptions.includes(x.i))
+      : c.options.map((o, i) => ({ o, i }));
+  const losers = c.status === "decided" && c.mode === "vote" ? state.members.filter((m) => m.choice !== c.resultIndex) : [];
   const countdown =
     remaining === null
       ? "手动开庭"
@@ -151,7 +183,7 @@ export default function CasePage({ id }: { id: string }) {
         <Link to="/" className="pixel-btn pixel-btn--ghost pixel-btn--sm">
           立案大厅
         </Link>
-        <span className="pixel-tag">{c.mode === "vote" ? "民主投票" : "命运轮盘"}</span>
+        <span className="pixel-tag">{c.mode === "vote" ? (c.status === "runoff" ? "平票加赛" : "民主投票") : "命运轮盘"}</span>
         <Link to={`/room/${c.roomId}`} className="pixel-btn pixel-btn--ghost pixel-btn--sm">
           本院档案
         </Link>
@@ -160,7 +192,7 @@ export default function CasePage({ id }: { id: string }) {
       <section className="pixel-panel flex flex-col gap-3 p-5">
         <h1 className="text-2xl leading-snug">{c.question}</h1>
         <p className="text-sm" style={{ color: "var(--site-muted)" }}>
-          {c.status === "open" ? (
+          {c.status !== "decided" ? (
             <>
               距开庭 <span className={remaining !== null && remaining < 15000 ? "pixel-blink font-bold" : "font-bold"}>{countdown}</span>
               {" · "}
@@ -172,7 +204,13 @@ export default function CasePage({ id }: { id: string }) {
           )}
         </p>
 
-        {c.status === "open" && (
+        {c.status === "runoff" && (
+          <p className="pixel-blink text-sm font-bold" role="status">
+            平票！进入决胜局：仅平票选项参与，票数清零重新投票。
+          </p>
+        )}
+
+        {c.status !== "decided" && (
           <button
             type="button"
             className="pixel-btn pixel-btn--ghost pixel-btn--sm self-start"
@@ -182,7 +220,7 @@ export default function CasePage({ id }: { id: string }) {
           </button>
         )}
 
-        {c.status === "open" && !me && (
+        {c.status !== "decided" && !me && (
           <div className="flex flex-col gap-2">
             <label className="text-sm" htmlFor="nickname">
               报上名来（昵称）
@@ -219,9 +257,9 @@ export default function CasePage({ id }: { id: string }) {
           </div>
         )}
 
-        {c.status === "open" && me && c.mode === "vote" && (
+        {c.status !== "decided" && me && c.mode === "vote" && (
           <ul className="flex flex-col gap-2" aria-label="候选选项">
-            {c.options.map((opt, i) => (
+            {voteOptions.map(({ o, i }) => (
               <li key={i}>
                 <button
                   type="button"
@@ -233,7 +271,7 @@ export default function CasePage({ id }: { id: string }) {
                 >
                   <span className="flex items-center justify-between gap-2">
                     <span className="text-base">
-                      {opt}
+                      {o}
                       {me.choice === i ? "（已投）" : ""}
                     </span>
                     <span className="text-sm font-bold">{state.counts[i]} 票</span>
@@ -247,7 +285,7 @@ export default function CasePage({ id }: { id: string }) {
           </ul>
         )}
 
-        {c.status === "open" && me && c.mode === "roulette" && (
+        {c.status !== "decided" && me && c.mode === "roulette" && (
           <div className="flex flex-col gap-2">
             <p className="text-sm">在场见证人：</p>
             <p className="flex flex-wrap gap-2">
@@ -263,14 +301,14 @@ export default function CasePage({ id }: { id: string }) {
           </div>
         )}
 
-        {c.status === "open" && isCreator && (
+        {c.status !== "decided" && isCreator && (
           <button
             type="button"
             className="pixel-btn pixel-btn--red"
             disabled={busy}
             onClick={() => act(() => api.decide(c.id, voterId))}
           >
-            {c.mode === "vote" ? "提前开庭" : "立即开庭"}
+            {c.mode === "vote" ? (c.status === "runoff" ? "立即终审" : "提前开庭") : "立即开庭"}
           </button>
         )}
       </section>
@@ -312,6 +350,30 @@ export default function CasePage({ id }: { id: string }) {
             </p>
           </section>
 
+          {c.punishmentText && (
+            <section className="pixel-panel flex flex-col gap-1 p-4 text-sm" aria-live="polite">
+              {c.mode === "vote" ? (
+                losers.length > 0 ? (
+                  <>
+                    <p>
+                      败选方：<span className="font-bold">{losers.map((m) => m.nickname).join("、")}</span>
+                    </p>
+                    <p>
+                      惩罚令：<span className="font-bold">{c.punishmentText}</span>
+                    </p>
+                  </>
+                ) : (
+                  <p>全票通过！无人败选，惩罚作废，全员庆祝。</p>
+                )
+              ) : (
+                <p>
+                  <span className="font-bold">{c.options[c.resultIndex ?? 0]}</span> 被命运选中，附加惩罚：
+                  <span className="font-bold">{c.punishmentText}</span>
+                </p>
+              )}
+            </section>
+          )}
+
           {c.verdictStatus === "ready" && c.verdictText ? (
             <VerdictCard c={c} />
           ) : (
@@ -323,7 +385,12 @@ export default function CasePage({ id }: { id: string }) {
               <button
                 type="button"
                 className="pixel-btn pixel-btn--ghost pixel-btn--sm"
-                onClick={() => copy("verdict", `【宿舍法院判决书】${c.question} 判决结果：${c.options[c.resultIndex ?? 0]}。${c.verdictText}`)}
+                onClick={() =>
+                  copy(
+                    "verdict",
+                    `【宿舍法院判决书】${c.question} 判决结果：${c.options[c.resultIndex ?? 0]}。${c.verdictText}${c.punishmentText ? ` 惩罚令：${c.punishmentText}` : ""}`,
+                  )
+                }
               >
                 {copied === "verdict" ? "已复制判决书" : "复制判决书"}
               </button>
@@ -334,7 +401,7 @@ export default function CasePage({ id }: { id: string }) {
               onClick={() =>
                 copy(
                   "share",
-                  `宿舍法院裁决：${c.question} → ${c.options[c.resultIndex ?? 0]}！${c.verdictText ?? ""} 围观/再开一庭 → ${shareUrl(c.id)}`,
+                  `宿舍法院裁决：${c.question} → ${c.options[c.resultIndex ?? 0]}！${c.verdictText ?? ""}${c.punishmentText ? ` 惩罚令：${c.punishmentText}` : ""} 围观/再开一庭 → ${shareUrl(c.id)}`,
                 )
               }
             >
